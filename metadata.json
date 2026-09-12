@@ -1,0 +1,7 @@
+{
+  "name": "StudyAce AI - Smart Learning for Classes 6-10",
+  "description": "Personalized AI study companion for students in grades 6–10 featuring an AI personal tutor, smart study planner, exam rescue mode, notes-to-quiz generator, weak topic detector, spaced revision, and voice learning.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
