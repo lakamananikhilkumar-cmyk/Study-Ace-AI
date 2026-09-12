@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import dotenv from "dotenv";
+import { spawn } from "child_process";
 import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
@@ -2115,80 +2116,242 @@ ${code || "# No code provided"}
   }
 });
 
-// 4. Code Runner & Execution Simulator Endpoint
+// 4. Code Runner & Execution Sandbox Endpoint
 app.post("/api/code/run", async (req, res) => {
-  const { language, code } = req.body;
+  const { language, code, stdin } = req.body;
   const startTime = Date.now();
 
   if (!code || typeof code !== "string") {
     return res.status(400).json({ error: "No code provided to execute." });
   }
 
-  try {
-    const lang = (language || "javascript").toLowerCase();
+  const lang = (language || "javascript").toLowerCase();
 
-    // 1. JavaScript: Safe in-process evaluation with sandboxed console.log capture
-    if (lang === "javascript") {
-      let outputLogs: string[] = [];
-      const customConsole = {
-        log: (...args: any[]) => {
-          outputLogs.push(args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
-        },
-        error: (...args: any[]) => {
-          outputLogs.push("[Error] " + args.map(a => String(a)).join(" "));
-        },
-        warn: (...args: any[]) => {
-          outputLogs.push("[Warn] " + args.map(a => String(a)).join(" "));
+  // 1. Python 3: Real execution via container's python3 runtime
+  if (lang === "python" || lang === "py") {
+    return new Promise<void>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let isDone = false;
+
+      const proc = spawn("/usr/bin/python3", ["-u", "-"], { timeout: 4000 });
+
+      const timer = setTimeout(() => {
+        if (!isDone) {
+          isDone = true;
+          try { proc.kill("SIGKILL"); } catch (e) {}
+          res.json({
+            success: false,
+            stdout,
+            error: "⏱️ Execution Timed Out (> 4 seconds).\nCheck for infinite loops (e.g., 'while' condition never becomes False) or interactive input().",
+            executionTimeMs: Date.now() - startTime
+          });
+          resolve();
         }
-      };
+      }, 4000);
 
-      try {
-        // Safe evaluation wrapping
-        const runFn = new Function("console", `"use strict";\n${code}`);
-        runFn(customConsole);
-
-        const executionTimeMs = Date.now() - startTime;
-        return res.json({
-          success: true,
-          stdout: outputLogs.length > 0 ? outputLogs.join("\n") : "Program executed with return code 0 (No console output produced).",
-          executionTimeMs
-        });
-      } catch (runtimeErr: any) {
-        return res.json({
-          success: false,
-          stdout: outputLogs.join("\n"),
-          error: `${runtimeErr.name}: ${runtimeErr.message}`,
-          executionTimeMs: Date.now() - startTime
-        });
-      }
-    }
-
-    // 2. HTML: HTML is rendered directly on client preview
-    if (lang === "html" || lang === "css") {
-      return res.json({
-        success: true,
-        stdout: "HTML/CSS rendered successfully in Live Web Preview.",
-        executionTimeMs: Date.now() - startTime
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+        if (stdout.length > 50000) {
+          try { proc.kill("SIGKILL"); } catch (e) {}
+        }
       });
-    }
 
-    // 3. Python, C++, Java, C: Smart Simulator with output synthesis or AI execution verification
-    let simulatedOutput = "";
-    
-    // Pattern match common print statements
-    if (lang === "python") {
-      const printRegex = /print\s*\((.*?)\)/g;
-      const outputs: string[] = [];
-      let match;
-      while ((match = printRegex.exec(code)) !== null) {
-        let inside = match[1].trim();
-        // Remove outer quotes or evaluate simple math/vars
-        inside = inside.replace(/f"([^"]*)"/g, (_, p1) => p1.replace(/\{([^}]+)\}/g, "[$1]"));
-        inside = inside.replace(/^["'](.*)["']$/, "$1");
-        outputs.push(inside);
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("error", (err) => {
+        if (!isDone) {
+          isDone = true;
+          clearTimeout(timer);
+          res.json({
+            success: false,
+            stdout,
+            error: `Python environment error: ${err.message}`,
+            executionTimeMs: Date.now() - startTime
+          });
+          resolve();
+        }
+      });
+
+      proc.on("close", (exitCode) => {
+        if (!isDone) {
+          isDone = true;
+          clearTimeout(timer);
+          const executionTimeMs = Date.now() - startTime;
+
+          if (exitCode === 0) {
+            res.json({
+              success: true,
+              stdout: stdout || "Program executed successfully with return code 0.\n(No console output was printed).",
+              executionTimeMs
+            });
+          } else {
+            // Friendly formatting of line numbers
+            const cleanedError = stderr.replace(/File "<stdin>", line /g, "Line ");
+            res.json({
+              success: false,
+              stdout: stdout,
+              error: cleanedError || `Process exited with error code ${exitCode}`,
+              executionTimeMs
+            });
+          }
+          resolve();
+        }
+      });
+
+      if (stdin && typeof stdin === "string") {
+        proc.stdin.write(stdin + "\n");
       }
-      simulatedOutput = outputs.length > 0 ? outputs.join("\n") : "Program executed successfully (Python 3.12 runtime).";
-    } else if (lang === "cpp") {
+      proc.stdin.write(code);
+      proc.stdin.end();
+    });
+  }
+
+  // 2. JavaScript: Real Node.js child_process sandbox
+  if (lang === "javascript" || lang === "js") {
+    return new Promise<void>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let isDone = false;
+
+      // Wrap code to safely capture all outputs and errors
+      const wrapped = `
+        "use strict";
+        try {
+          ${code}
+        } catch (err) {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exit(1);
+        }
+      `;
+
+      const proc = spawn("node", ["-e", wrapped], { timeout: 4000 });
+
+      const timer = setTimeout(() => {
+        if (!isDone) {
+          isDone = true;
+          try { proc.kill("SIGKILL"); } catch (e) {}
+          res.json({
+            success: false,
+            stdout,
+            error: "⏱️ Execution Timed Out (> 4 seconds).\nCheck for infinite loops (like while(true) without break).",
+            executionTimeMs: Date.now() - startTime
+          });
+          resolve();
+        }
+      }, 4000);
+
+      proc.stdout.on("data", (data) => {
+        stdout += data.toString();
+        if (stdout.length > 50000) {
+          try { proc.kill("SIGKILL"); } catch (e) {}
+        }
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      proc.on("error", (err) => {
+        if (!isDone) {
+          isDone = true;
+          clearTimeout(timer);
+          res.json({
+            success: false,
+            stdout,
+            error: `JavaScript execution error: ${err.message}`,
+            executionTimeMs: Date.now() - startTime
+          });
+          resolve();
+        }
+      });
+
+      proc.on("close", (exitCode) => {
+        if (!isDone) {
+          isDone = true;
+          clearTimeout(timer);
+          const executionTimeMs = Date.now() - startTime;
+
+          if (exitCode === 0) {
+            res.json({
+              success: true,
+              stdout: stdout || "Program executed successfully with return code 0.\n(No console output was printed).",
+              executionTimeMs
+            });
+          } else {
+            res.json({
+              success: false,
+              stdout,
+              error: stderr || `Process exited with error code ${exitCode}`,
+              executionTimeMs
+            });
+          }
+          resolve();
+        }
+      });
+    });
+  }
+
+  // 3. HTML & CSS: Instant live preview return
+  if (lang === "html" || lang === "css") {
+    return res.json({
+      success: true,
+      stdout: `${lang.toUpperCase()} document compiled successfully. Live Web Preview is active.`,
+      isWebPreview: true,
+      executionTimeMs: Math.max(8, Date.now() - startTime)
+    });
+  }
+
+  // 4. C, C++, Java: Gemini Compiler Engine with Deterministic Local Fallback
+  try {
+    const systemPrompt = `You are a high-fidelity, strict, and exact compiler and runtime execution engine for student programming languages: C (gcc), C++ (g++), and Java (javac).
+Target: Class 6-10 School Computer Science Curriculum.
+
+Rules:
+1. First, perform strict syntax and compilation checks for the specified language.
+2. If there are syntax errors (e.g. missing semicolons, unmatched braces, typos in keyword, missing return type):
+   - Set "success": false.
+   - In "error": Provide the realistic compiler error (e.g. "error: expected ';' before '}' on line X") followed by a friendly 1-sentence tip explaining what the student should fix.
+   - In "stdout": Empty string.
+3. If the code compiles cleanly:
+   - Set "success": true.
+   - In "stdout": Execute the code faithfully step-by-step and produce the EXACT terminal standard output that would be printed to stdout.
+   - In "error": null.
+4. Output strictly valid JSON matching this schema:
+{
+  "success": boolean,
+  "stdout": string,
+  "error": string | null,
+  "compiler": string
+}`;
+
+    const contents = `Language: ${lang.toUpperCase()}
+Source Code:
+\`\`\`${lang}
+${code}
+\`\`\`
+${stdin ? `Standard Input (stdin): "${stdin}"` : "Standard Input: None"}`;
+
+    const { text } = await callGemini({
+      contents,
+      systemInstruction: systemPrompt,
+      responseMimeType: "application/json",
+      temperature: 0.1,
+    });
+
+    const parsed = JSON.parse(cleanJsonString(text || "{}"));
+    return res.json({
+      success: typeof parsed.success === "boolean" ? parsed.success : true,
+      stdout: parsed.stdout || `[${lang.toUpperCase()} Sandbox Runtime]\nProgram compiled & executed with return code 0.`,
+      error: parsed.error || undefined,
+      executionTimeMs: Date.now() - startTime
+    });
+  } catch (err) {
+    // Deterministic fallback for C/C++/Java
+    let simulatedOutput = "";
+    if (lang === "cpp") {
       const coutRegex = /cout\s*<<\s*([^;]+);/g;
       const outputs: string[] = [];
       let match;
@@ -2223,15 +2386,10 @@ app.post("/api/code/run", async (req, res) => {
       simulatedOutput = outputs.length > 0 ? outputs.join("\n") : "Compiled with gcc -Wall main.c\nProgram exited with code 0.";
     }
 
-    res.json({
+    return res.json({
       success: true,
-      stdout: simulatedOutput || `[${lang.toUpperCase()} Sandbox Runtime]\nProgram compiled & executed with return code 0.`,
-      executionTimeMs: Math.max(15, Date.now() - startTime)
-    });
-  } catch (err: any) {
-    res.status(500).json({
-      success: false,
-      error: err?.message || "Execution error in simulator"
+      stdout: simulatedOutput || `[${lang.toUpperCase()} Sandbox Runtime]\nProgram executed with return code 0.`,
+      executionTimeMs: Date.now() - startTime
     });
   }
 });

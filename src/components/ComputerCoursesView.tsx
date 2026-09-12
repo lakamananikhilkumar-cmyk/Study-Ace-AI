@@ -30,7 +30,12 @@ import {
   Trophy,
   PanelLeft,
   TrendingUp,
-  Medal
+  Medal,
+  Trash2,
+  Clock,
+  Sliders,
+  Eye,
+  Keyboard
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { useApp } from '../context/AppContext';
@@ -146,6 +151,12 @@ export const ComputerCoursesView: React.FC = () => {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isCopied, setIsCopied] = useState<boolean>(false);
   const [activePlaygroundTab, setActivePlaygroundTab] = useState<'editor' | 'preview'>('editor');
+  const [stdin, setStdin] = useState<string>('');
+  const [showStdin, setShowStdin] = useState<boolean>(false);
+  const [runStatus, setRunStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  const [lastExecutionTime, setLastExecutionTime] = useState<number | null>(null);
+  const [isOutputCopied, setIsOutputCopied] = useState<boolean>(false);
+  const [previewKey, setPreviewKey] = useState<number>(0);
 
   // Daily Problems State
   const [challenges, setChallenges] = useState<Challenge[]>([]);
@@ -254,43 +265,69 @@ export const ComputerCoursesView: React.FC = () => {
   const handleSelectLanguage = (langId: ProgrammingLanguage) => {
     setSelectedLangId(langId);
     setSelectedLessonIndex(0);
+    setRunStatus('idle');
     const lang = languages.find(l => l.id === langId);
     if (lang) {
       setCode(lang.starterTemplate || lang.lessons[0]?.starterCode || '');
       setOutput('');
+    }
+    // Auto-switch to Live Web Preview for HTML/CSS
+    if (langId === 'html' || langId === 'css') {
+      setActivePlaygroundTab('preview');
+      setPreviewKey(prev => prev + 1);
+    } else {
+      setActivePlaygroundTab('editor');
     }
   };
 
   // Change lesson selection
   const handleSelectLesson = (index: number) => {
     setSelectedLessonIndex(index);
+    setRunStatus('idle');
     if (currentLanguage?.lessons?.[index]) {
       setCode(currentLanguage.lessons[index].starterCode);
       setOutput('');
+      if (selectedLangId === 'html' || selectedLangId === 'css') {
+        setPreviewKey(prev => prev + 1);
+      }
     }
   };
 
   // Run Code
   const handleRunCode = async () => {
     setIsRunning(true);
-    setOutput('Compiling and executing code...');
+    setRunStatus('idle');
+    setOutput('Compiling and executing code in sandbox...');
+
+    // If web preview, switch to preview tab immediately
+    if (selectedLangId === 'html' || selectedLangId === 'css') {
+      setActivePlaygroundTab('preview');
+      setPreviewKey(prev => prev + 1);
+    }
+
     try {
       const res = await fetch('/api/code/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           language: selectedLangId,
-          code
+          code,
+          stdin: showStdin ? stdin : undefined
         })
       });
       const data = await res.json();
+      setLastExecutionTime(data.executionTimeMs || null);
+
       if (data.success) {
+        setRunStatus('success');
         setOutput(data.stdout || 'Program exited with return code 0.');
         addXP(5, `Ran ${selectedLangId.toUpperCase()} code`);
       } else {
+        setRunStatus('error');
         setOutput(`Error:\n${data.error || 'Syntax or runtime error occurred.'}`);
       }
     } catch (err: any) {
+      setRunStatus('error');
       setOutput(`Failed to run: ${err?.message || 'Server connection error.'}`);
     } finally {
       setIsRunning(false);
@@ -304,6 +341,14 @@ export const ComputerCoursesView: React.FC = () => {
     setTimeout(() => setIsCopied(false), 2000);
   };
 
+  // Copy output helper
+  const handleCopyOutput = () => {
+    if (!output) return;
+    navigator.clipboard.writeText(output);
+    setIsOutputCopied(true);
+    setTimeout(() => setIsOutputCopied(false), 2000);
+  };
+
   // Reset code to current lesson or starter template
   const handleResetCode = () => {
     if (currentLesson) {
@@ -312,6 +357,64 @@ export const ComputerCoursesView: React.FC = () => {
       setCode(currentLanguage.starterTemplate);
     }
     setOutput('');
+    setRunStatus('idle');
+    if (selectedLangId === 'html' || selectedLangId === 'css') {
+      setPreviewKey(prev => prev + 1);
+    }
+  };
+
+  // Tab key handler for real coding experience in editor
+  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const target = e.currentTarget;
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      const spaces = '    '; // 4 spaces indentation
+      const newCode = code.substring(0, start) + spaces + code.substring(end);
+      setCode(newCode);
+      requestAnimationFrame(() => {
+        target.selectionStart = target.selectionEnd = start + spaces.length;
+      });
+    }
+  };
+
+  // HTML / CSS preview builder with automatic template wrapping for pure CSS
+  const getRenderedHtml = () => {
+    if (selectedLangId === 'css') {
+      // If student code already contains HTML elements
+      if (code.includes('<html') || code.includes('<body') || code.includes('<div') || code.includes('<style')) {
+        return code;
+      }
+      return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    ${code}
+  </style>
+</head>
+<body>
+  <div class="card" style="max-width: 480px; margin: 0 auto; padding: 24px; border-radius: 16px; background: white; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); border: 1px solid #e2e8f0;">
+    <h2 style="margin-top: 0; font-size: 20px; font-weight: 800; color: #1e293b;">🎨 Live CSS Playground</h2>
+    <p style="color: #64748b; font-size: 14px; line-height: 1.5;">This canvas applies your custom CSS rules live in real time.</p>
+    <div style="margin: 16px 0; display: flex; flex-wrap: wrap; gap: 8px;">
+      <button class="glow-btn btn" style="padding: 10px 18px; border-radius: 10px; font-weight: bold; background: #6366f1; color: white; border: none; cursor: pointer;">Action Button</button>
+      <div class="study-badge" style="padding: 10px 18px; border-radius: 9999px; font-weight: bold; background: #fef3c7; color: #92400e; border: 2px solid #f59e0b; display: inline-flex; align-items: center;">🏆 Topper Badge</div>
+    </div>
+  </div>
+</body>
+</html>`;
+    }
+    return code;
   };
 
   // AI Assistance: Explain / Debug / Hint
@@ -1030,29 +1133,64 @@ export const ComputerCoursesView: React.FC = () => {
                     id="code-editor-input"
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
-                    rows={15}
+                    onKeyDown={handleEditorKeyDown}
+                    rows={14}
                     spellCheck={false}
                     className="w-full bg-slate-950 text-emerald-400 font-mono text-xs sm:text-sm p-4 leading-relaxed outline-none border-none resize-y selection:bg-indigo-500/40 selection:text-white"
-                    placeholder="Write your code here..."
+                    placeholder="Write your code here... (Tab key is supported for indentation)"
                   />
                 </div>
 
+                {/* Collapsible Standard Input (stdin) Drawer */}
+                {showStdin && (
+                  <div className="bg-slate-900/95 border-t border-slate-800 p-3 space-y-1.5 animate-fadeIn">
+                    <div className="flex items-center justify-between text-xs text-slate-400">
+                      <span className="font-mono flex items-center gap-1 text-amber-300">
+                        <Keyboard className="w-3.5 h-3.5" /> Program Input (stdin):
+                      </span>
+                      <span className="text-[11px] text-slate-500">Fed to input(), cin, Scanner, or stdin streams</span>
+                    </div>
+                    <textarea
+                      value={stdin}
+                      onChange={(e) => setStdin(e.target.value)}
+                      rows={2}
+                      placeholder="Enter inputs here (one per line, e.g. 10 or Alex)..."
+                      className="w-full bg-slate-950 text-slate-200 font-mono text-xs p-2 rounded-lg border border-slate-800 outline-none focus:border-amber-500/50 resize-none"
+                    />
+                  </div>
+                )}
+
                 {/* Editor Footer with Run Button */}
-                <div className="bg-slate-900 px-4 py-3 border-t border-slate-800 flex items-center justify-between">
-                  <span className="text-xs text-slate-400">
-                    💡 Tip: Edit values and press <strong className="text-white">Run Code</strong> to test your logic!
-                  </span>
+                <div className="bg-slate-900 px-4 py-3 border-t border-slate-800 flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setShowStdin(!showStdin)}
+                      className={`text-xs px-2.5 py-1 rounded-lg border transition flex items-center gap-1.5 ${
+                        showStdin
+                          ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 font-bold'
+                          : 'bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white'
+                      }`}
+                      title="Toggle standard input for interactive programs"
+                    >
+                      <Keyboard className="w-3.5 h-3.5" />
+                      <span>{showStdin ? 'Hide Stdin' : 'Custom Input (stdin)'}</span>
+                    </button>
+                    <span className="hidden sm:inline text-xs text-slate-400">
+                      Press <kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-[11px] text-slate-300 border border-slate-700">Tab</kbd> to indent
+                    </span>
+                  </div>
 
                   <button
                     id="run-code-button"
                     onClick={handleRunCode}
                     disabled={isRunning}
-                    className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-emerald-500/20 active:scale-95 transition-all disabled:opacity-50"
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-lg shadow-emerald-500/20 active:scale-95 transition-all disabled:opacity-50"
                   >
                     {isRunning ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Running...</span>
+                        <span>Running sandbox...</span>
                       </>
                     ) : (
                       <>
@@ -1080,53 +1218,110 @@ export const ComputerCoursesView: React.FC = () => {
             <div className="lg:col-span-5 space-y-4 min-w-0">
               <div className="bg-slate-950 rounded-2xl border border-slate-800 shadow-xl overflow-hidden flex flex-col h-full min-h-[420px]">
                 {/* Output Header */}
-                <div className="bg-slate-900 px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+                <div className="bg-slate-900 px-4 py-3 border-b border-slate-800 flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2">
                     <Terminal className="w-4 h-4 text-amber-400" />
                     <span className="text-xs font-mono font-bold text-slate-200">
-                      Execution Output & Terminal
+                      {activePlaygroundTab === 'preview' ? 'Live Web Preview Canvas' : 'Execution Output & Terminal'}
                     </span>
                   </div>
 
-                  {/* Toggle between Terminal and HTML preview if HTML/CSS */}
-                  {(selectedLangId === 'html' || selectedLangId === 'css') && (
-                    <div className="flex rounded-lg bg-slate-800 p-0.5 text-xs">
-                      <button
-                        onClick={() => setActivePlaygroundTab('editor')}
-                        className={`px-2.5 py-1 rounded font-bold transition ${
-                          activePlaygroundTab === 'editor' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'
-                        }`}
-                      >
-                        Terminal
-                      </button>
-                      <button
-                        onClick={() => setActivePlaygroundTab('preview')}
-                        className={`px-2.5 py-1 rounded font-bold transition ${
-                          activePlaygroundTab === 'preview' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'
-                        }`}
-                      >
-                        Live Web Preview
-                      </button>
-                    </div>
-                  )}
+                  {/* Header Actions */}
+                  <div className="flex items-center gap-2">
+                    {/* Toggle between Terminal and HTML preview if HTML/CSS */}
+                    {(selectedLangId === 'html' || selectedLangId === 'css') ? (
+                      <div className="flex rounded-lg bg-slate-800 p-0.5 text-xs">
+                        <button
+                          onClick={() => setActivePlaygroundTab('editor')}
+                          className={`px-2.5 py-1 rounded font-bold transition flex items-center gap-1 ${
+                            activePlaygroundTab === 'editor' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'
+                          }`}
+                        >
+                          <Terminal className="w-3 h-3" /> Terminal
+                        </button>
+                        <button
+                          onClick={() => {
+                            setActivePlaygroundTab('preview');
+                            setPreviewKey(k => k + 1);
+                          }}
+                          className={`px-2.5 py-1 rounded font-bold transition flex items-center gap-1 ${
+                            activePlaygroundTab === 'preview' ? 'bg-amber-500 text-slate-950' : 'text-slate-400'
+                          }`}
+                        >
+                          <Eye className="w-3 h-3" /> Live Preview
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={handleCopyOutput}
+                          disabled={!output}
+                          className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition disabled:opacity-40"
+                          title="Copy terminal output"
+                        >
+                          {isOutputCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setOutput('');
+                            setRunStatus('idle');
+                          }}
+                          disabled={!output}
+                          className="p-1.5 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition disabled:opacity-40"
+                          title="Clear output console"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Console Output Display or Live Web Preview */}
                 {activePlaygroundTab === 'preview' && (selectedLangId === 'html' || selectedLangId === 'css') ? (
-                  <div className="flex-1 p-3 bg-white min-h-[350px]">
-                    <iframe
-                      title="HTML Preview"
-                      srcDoc={code}
-                      className="w-full h-full min-h-[350px] border-none rounded"
-                      sandbox="allow-scripts"
-                    />
+                  <div className="flex-1 p-2 bg-slate-900/50 flex flex-col min-h-[350px]">
+                    <div className="flex items-center justify-between px-2 py-1 text-[11px] text-slate-400 border-b border-slate-800 mb-2">
+                      <span className="flex items-center gap-1 font-mono">
+                        <Eye className="w-3 h-3 text-cyan-400" /> Rendered Document View
+                      </span>
+                      <button
+                        onClick={() => setPreviewKey(k => k + 1)}
+                        className="text-slate-400 hover:text-white flex items-center gap-1 text-[11px]"
+                      >
+                        <RefreshCw className="w-3 h-3" /> Reload Frame
+                      </button>
+                    </div>
+                    <div className="flex-1 bg-white rounded-xl overflow-hidden min-h-[340px] shadow-inner">
+                      <iframe
+                        key={previewKey}
+                        title="HTML/CSS Preview Canvas"
+                        srcDoc={getRenderedHtml()}
+                        className="w-full h-full min-h-[340px] border-none"
+                        sandbox="allow-scripts"
+                      />
+                    </div>
                   </div>
                 ) : (
                   <div className="flex-1 p-4 font-mono text-xs text-slate-200 overflow-y-auto space-y-2 min-h-[350px]">
                     {output ? (
-                      <pre className="whitespace-pre-wrap leading-relaxed text-slate-200 font-mono">
-                        {output}
-                      </pre>
+                      <div className="space-y-3">
+                        <pre className={`whitespace-pre-wrap leading-relaxed font-mono p-3 rounded-xl border ${
+                          runStatus === 'error'
+                            ? 'bg-rose-950/30 border-rose-800/60 text-rose-300'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-200'
+                        }`}>
+                          {output}
+                        </pre>
+                        {runStatus === 'error' && (
+                          <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs flex items-start gap-2">
+                            <Lightbulb className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                            <div>
+                              <span className="font-bold block">💡 Code Mentor Tip:</span>
+                              <p>Click the <strong>"Debug"</strong> or <strong>"Explain"</strong> buttons in the editor toolbar above to have StudyAce AI pinpoint the exact line and explain how to fix it!</p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : (
                       <div className="text-slate-500 text-center py-16 space-y-2">
                         <Terminal className="w-8 h-8 mx-auto text-slate-600 mb-2" />
@@ -1142,7 +1337,17 @@ export const ComputerCoursesView: React.FC = () => {
                 {/* Console Footer */}
                 <div className="bg-slate-900/80 px-4 py-2.5 border-t border-slate-800 text-[11px] font-mono text-slate-400 flex items-center justify-between">
                   <span>Runtime: {selectedLangId.toUpperCase()} Sandbox Engine</span>
-                  <span className="text-emerald-400">● Ready</span>
+                  {runStatus === 'success' ? (
+                    <span className="text-emerald-400 font-bold flex items-center gap-1">
+                      ● Success {lastExecutionTime ? `(${lastExecutionTime}ms)` : ''}
+                    </span>
+                  ) : runStatus === 'error' ? (
+                    <span className="text-rose-400 font-bold flex items-center gap-1">
+                      ● Error {lastExecutionTime ? `(${lastExecutionTime}ms)` : ''}
+                    </span>
+                  ) : (
+                    <span className="text-emerald-400">● Ready</span>
+                  )}
                 </div>
               </div>
             </div>
