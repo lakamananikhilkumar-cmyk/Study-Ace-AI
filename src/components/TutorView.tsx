@@ -169,12 +169,24 @@ export const TutorView: React.FC = () => {
         })
       });
 
-      const data = await res.json();
+      const contentType = res.headers.get('content-type') || '';
+      let data: any = {};
+
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const rawText = await res.text();
+        throw new Error(`Server returned non-JSON response (HTTP ${res.status}): ${rawText.slice(0, 100)}`);
+      }
+
+      if (!res.ok && !data.explanation) {
+        throw new Error(`HTTP ${res.status}: ${data.error || res.statusText || 'Request failed'}`);
+      }
 
       const aiMsg: TutorMessage = {
         id: `ai-${Date.now()}`,
         sender: 'ai',
-        text: data.explanation || 'Here is the explanation for your doubt.',
+        text: data.explanation || (data.error ? `Error: ${data.error}` : 'Here is the explanation for your doubt.'),
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         problemSolution: data.problemSolution,
         analogy: data.analogy,
@@ -191,15 +203,15 @@ export const TutorView: React.FC = () => {
       completeMission('mission-doubt');
 
       // Auto-read if voice user
-      if (isListening) {
+      if (isListening && data.explanation) {
         speakText(data.explanation);
       }
-    } catch (err) {
-      console.error('Failed to get answer:', err);
+    } catch (err: any) {
+      console.error('Failed to get answer from AI Tutor:', err);
       const errorMsg: TutorMessage = {
         id: `ai-err-${Date.now()}`,
         sender: 'ai',
-        text: 'I encountered an issue generating the answer. Please check your connection or try again!',
+        text: `⚠️ AI Tutor Diagnostic Error: ${err?.message || 'Connection or upstream failure.'}\n\nPlease verify that the server is running and GEMINI_API_KEY is configured in your environment.`,
         timestamp: 'Just now'
       };
       setMessages(prev => [...prev, errorMsg]);

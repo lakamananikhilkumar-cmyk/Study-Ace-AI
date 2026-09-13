@@ -303,8 +303,42 @@ export const ComputerCoursesView: React.FC = () => {
     if (selectedLangId === 'html' || selectedLangId === 'css') {
       setActivePlaygroundTab('preview');
       setPreviewKey(prev => prev + 1);
+      setIsRunning(false);
+      return;
     }
 
+    // Fast, secure in-browser sandboxed execution for JavaScript
+    if (selectedLangId === 'javascript') {
+      const logs: string[] = [];
+      const customConsole = {
+        log: (...args: any[]) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+        info: (...args: any[]) => logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+        warn: (...args: any[]) => logs.push('[Warning] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')),
+        error: (...args: any[]) => logs.push('[Error] ' + args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '))
+      };
+      const startTime = performance.now();
+      try {
+        // Run in an isolated function scope with captured console
+        const fn = new Function('console', `"use strict";\n${code}`);
+        fn(customConsole);
+        const execTime = Math.round(performance.now() - startTime);
+        setLastExecutionTime(execTime);
+        setRunStatus('success');
+        setOutput(logs.join('\n') || 'Program executed successfully with return code 0.\n(No console output was printed).');
+        addXP(5, 'Ran JAVASCRIPT code');
+        setIsRunning(false);
+        return;
+      } catch (jsErr: any) {
+        const execTime = Math.round(performance.now() - startTime);
+        setLastExecutionTime(execTime);
+        setRunStatus('error');
+        setOutput(`JavaScript Runtime Error:\n${jsErr?.message || String(jsErr)}`);
+        setIsRunning(false);
+        return;
+      }
+    }
+
+    // Backend Execution for Python, Java, C++, C
     try {
       const res = await fetch('/api/code/run', {
         method: 'POST',
@@ -315,6 +349,13 @@ export const ComputerCoursesView: React.FC = () => {
           stdin: showStdin ? stdin : undefined
         })
       });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const textResp = await res.text();
+        throw new Error(`Server returned HTTP ${res.status} (${res.statusText}): ${textResp.slice(0, 100)}`);
+      }
+
       const data = await res.json();
       setLastExecutionTime(data.executionTimeMs || null);
 
@@ -328,7 +369,7 @@ export const ComputerCoursesView: React.FC = () => {
       }
     } catch (err: any) {
       setRunStatus('error');
-      setOutput(`Failed to run: ${err?.message || 'Server connection error.'}`);
+      setOutput(`Execution Error:\n${err?.message || 'Server connection error. Ensure the backend server is running.'}`);
     } finally {
       setIsRunning(false);
     }

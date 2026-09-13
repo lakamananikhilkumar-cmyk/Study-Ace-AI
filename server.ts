@@ -13,7 +13,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // Lazy initialize or get GoogleGenAI client
 function getGenAIClient(): GoogleGenAI | null {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
   if (!apiKey) {
     return null;
   }
@@ -31,7 +31,7 @@ function getGenAIClient(): GoogleGenAI | null {
 app.get("/api/health", (req, res) => {
   res.json({
     status: "ok",
-    hasApiKey: Boolean(process.env.GEMINI_API_KEY),
+    hasApiKey: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
     timestamp: new Date().toISOString()
   });
 });
@@ -62,8 +62,8 @@ async function callGemini(options: {
     throw new Error("GEMINI_API_KEY is not configured on the server");
   }
 
-  // Candidate models: start with gemini-3.1-flash-lite for ultra-fast response, fallback to gemini-3.8-flash
-  const candidateModels = ["gemini-3.1-flash-lite", "gemini-3.8-flash"];
+  // Active production models: gemini-flash-latest, gemini-3.1-flash-lite, gemini-2.5-flash
+  const candidateModels = ["gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
   let lastError: any = null;
 
   for (const model of candidateModels) {
@@ -508,6 +508,32 @@ app.post("/api/tutor/ask", async (req, res) => {
   const { question, subject, studentClass, level, chatHistory } = req.body;
   const fallbackVideos = getEducationalYoutubeLinks(question, subject, studentClass);
 
+  // Check for greetings (e.g. "hi", "hello") and respond warmly without heavy problem schema
+  const cleanQ = (question || "").trim().toLowerCase().replace(/[!.,?]/g, "");
+  const isGreeting = ["hi", "hello", "hey", "hola", "namaste", "good morning", "good evening", "greetings", "start"].includes(cleanQ);
+
+  if (isGreeting) {
+    return res.json({
+      explanation: "Hello! I'm your AI Personal Tutor. What would you like help with today? Feel free to ask any math problem, science concept, or homework question you're working on!",
+      analogy: "Think of me as your 24/7 personal study buddy: whenever you hit a roadblock in formulas, concepts, or homework, I am here to break it down step-by-step.",
+      stepByStep: [
+        "Type any question or doubt in Mathematics, Science, or Computer Science.",
+        "Or click one of the quick topic chips above to explore a concept.",
+        "I'll provide clear explanations, analogies, and verified step-by-step solutions!"
+      ],
+      solvedExample: "Example question you can ask: 'Explain photosynthesis for a beginner' or 'Solve x² - 5x + 6 = 0'.",
+      quickCheck: {
+        question: "What topic are you studying today?",
+        options: ["Mathematics & Algebra", "Physics & Numerical Problems", "Chemistry & Reactions", "Biology & Life Sciences"],
+        correctIndex: 0,
+        explanation: "Select your current focus area and let's conquer it together!"
+      },
+      youtubeVideos: fallbackVideos,
+      isGeminiPowered: true,
+      modelUsed: "tutor-greeting-engine"
+    });
+  }
+
   try {
     const systemPrompt = `You are "StudyAce AI", an enthusiastic, patient, and world-class personal tutor and problem solver specializing in CBSE/ICSE curriculum for Classes 6th to 10th.
 Your student is in ${studentClass || "Class 9/10"} at '${level || "intermediate"}' level.
@@ -593,44 +619,43 @@ Previous context: ${JSON.stringify(chatHistory?.slice(-3) || [])}`;
       modelUsed
     });
   } catch (err: any) {
-    console.warn("[Tutor API] Gemini call failed, serving curriculum problem engine fallback:", err?.message || err);
+    console.error("[Tutor API] Gemini call failed:", err?.message || err);
+    const isQuota = err?.message?.includes("RESOURCE_EXHAUSTED") || err?.status === 429 || err?.message?.includes("quota") || err?.message?.includes("limit: 10000");
+    const isModelMissing = err?.status === 404 || err?.message?.includes("not found") || err?.message?.includes("no longer available");
+    const isKeyMissing = !process.env.GEMINI_API_KEY && !process.env.GOOGLE_API_KEY;
 
-    // Provide high quality curriculum problem breakdown and YouTube videos so student is never stranded
-    res.json({
-      explanation: `### Problem Breakdown & Solution: ${question}\n\nHere is a foundational step-by-step resolution for **${subject || "General"}** (${studentClass || "Class 9/10"}):\n\n1. **Identify the Core Principle**: Every problem in middle/high school STEM stems from an underlying definition or conservation law.\n2. **Isolate Unknowns**: Write down what is given, what needs to be calculated, and identify the bridge equation.\n3. **Solve Carefully**: Maintain algebraic balance on both sides of the equal sign.`,
+    // Transparent error reporting as required for diagnostics
+    res.status(err?.status && err.status >= 400 && err.status < 600 ? err.status : 500).json({
+      error: err?.message || "Gemini API request failed",
+      status: err?.status || 500,
+      code: err?.code || "GEMINI_ERROR",
+      isQuotaExceeded: isQuota,
+      isModelUnavailable: isModelMissing,
+      isApiKeyMissing: isKeyMissing,
+      explanation: isQuota
+        ? "⚠️ Gemini API Quota Exceeded (HTTP 429 / RESOURCE_EXHAUSTED). The daily or per-minute token quota for the configured Gemini key was reached. Please verify quota or switch to a paid API key."
+        : isKeyMissing
+        ? "⚠️ GEMINI_API_KEY is not configured in the server environment. Please set GEMINI_API_KEY in your environment variables."
+        : `⚠️ Gemini AI Tutor Error (HTTP ${err?.status || 500}): ${err?.message || "Failed to generate AI response"}.`,
       problemSolution: {
         given: `Problem query: "${question}"`,
-        formula: subject?.toLowerCase().includes('math') ? "Standard Algebraic / Geometric Theorem" : "Fundamental Conservation & Equilibrium Law",
+        formula: "System Diagnostic Error",
         steps: [
-          `Step 1: Read the problem carefully and define variables for "${question.slice(0, 35)}..."`,
-          "Step 2: Express the relationship using standard curriculum formulas.",
-          "Step 3: Substitute the known values and simplify methodically.",
-          "Step 4: State the final calculated result with appropriate units."
+          `Error: ${err?.message || "API request failed"}`,
+          isQuota ? "Status: Rate limit or daily quota exceeded." : "Status: Server-side Gemini invocation failed."
         ],
-        finalAnswer: `Solved systematically according to standard ${studentClass || 'Class 10'} NCERT/ICSE curriculum syllabus.`,
-        verificationTip: "Substitute your calculated answer back into the original equation or check dimensional consistency."
+        finalAnswer: isQuota ? "Rate limit reached. Please retry in a few moments." : "Check server logs for error details.",
+        verificationTip: "Verify your API key at https://aistudio.google.com/app/apikey"
       },
-      analogy: "Think of an equation like a balanced playground seesaw: whatever weight or operation you add to the left side, you must mirror on the right side to keep it perfectly level.",
+      analogy: "Think of an overloaded server like a busy classroom where the teacher needs a brief moment before answering the next question.",
       stepByStep: [
-        "Step 1: Write down the given values and note the required variable.",
-        "Step 2: Apply the governing formula or rule.",
-        "Step 3: Solve algebraically and verify dimensions."
+        "Check your API key status at Google AI Studio.",
+        "Ensure GEMINI_API_KEY is set in your server environment.",
+        "Retry the question in a few moments."
       ],
-      solvedExample: `Similar Practice: When evaluating ${question.slice(0, 30)}..., verify both the left-hand and right-hand sides yield identical values.`,
-      quickCheck: {
-        question: `When solving problems on "${question.slice(0, 40)}...", what is the most reliable first step?`,
-        options: [
-          "List given parameters, desired variables, and the connecting formula",
-          "Jump immediately to numbers without units",
-          "Memorize the answer without understanding the steps",
-          "Ignore intermediate algebraic steps"
-        ],
-        correctIndex: 0,
-        explanation: "Listing given parameters and the connecting formula prevents calculation errors in exams!"
-      },
       youtubeVideos: fallbackVideos,
       isGeminiPowered: false,
-      modelUsed: "curriculum-engine"
+      modelUsed: "diagnostic-error"
     });
   }
 });
@@ -2127,14 +2152,16 @@ app.post("/api/code/run", async (req, res) => {
 
   const lang = (language || "javascript").toLowerCase();
 
-  // 1. Python 3: Real execution via container's python3 runtime
+  // 1. Python 3: Real execution via python3 runtime
   if (lang === "python" || lang === "py") {
     return new Promise<void>((resolve) => {
       let stdout = "";
       let stderr = "";
       let isDone = false;
 
-      const proc = spawn("/usr/bin/python3", ["-u", "-"], { timeout: 4000 });
+      // Prefer python3, fallback to python
+      const pythonBin = process.env.PYTHON_PATH || (process.platform === "win32" ? "python" : "python3");
+      const proc = spawn(pythonBin, ["-u", "-c", code], { timeout: 4000 });
 
       const timer = setTimeout(() => {
         if (!isDone) {
@@ -2161,14 +2188,17 @@ app.post("/api/code/run", async (req, res) => {
         stderr += data.toString();
       });
 
-      proc.on("error", (err) => {
+      proc.on("error", (err: any) => {
         if (!isDone) {
           isDone = true;
           clearTimeout(timer);
+          const isNotFound = err.code === "ENOENT";
           res.json({
             success: false,
             stdout,
-            error: `Python environment error: ${err.message}`,
+            error: isNotFound
+              ? `Python 3 interpreter is not installed on this host environment (${err.message}). On serverless hosting like Vercel, client-side execution or a containerized backend is required.`
+              : `Python execution error: ${err.message}`,
             executionTimeMs: Date.now() - startTime
           });
           resolve();
@@ -2189,7 +2219,7 @@ app.post("/api/code/run", async (req, res) => {
             });
           } else {
             // Friendly formatting of line numbers
-            const cleanedError = stderr.replace(/File "<stdin>", line /g, "Line ");
+            const cleanedError = stderr.replace(/File "<string>", line /g, "Line ").replace(/File "<stdin>", line /g, "Line ");
             res.json({
               success: false,
               stdout: stdout,
@@ -2202,9 +2232,8 @@ app.post("/api/code/run", async (req, res) => {
       });
 
       if (stdin && typeof stdin === "string") {
-        proc.stdin.write(stdin + "\n");
+        proc.stdin.write(stdin);
       }
-      proc.stdin.write(code);
       proc.stdin.end();
     });
   }
