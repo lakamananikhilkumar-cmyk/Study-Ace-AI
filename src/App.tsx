@@ -18,6 +18,7 @@ import { ComputerCoursesView } from './components/ComputerCoursesView';
 import { ProfileModal } from './components/ProfileModal';
 import { BadgeModal } from './components/BadgeModal';
 import { AlarmTriggerDialog } from './components/AlarmTriggerDialog';
+import { Footer } from './components/Footer';
 
 function MainContent() {
   const { isAuthenticated, activeTab } = useApp();
@@ -61,18 +62,8 @@ function MainContent() {
           {activeTab === 'alarms' && <AlarmsView />}
         </main>
 
-        {/* Footer */}
-        <footer className="border-t border-stone-200 dark:border-stone-800/80 bg-white dark:bg-stone-900/50 py-4 px-6 text-center text-xs text-stone-500 dark:text-stone-400">
-          <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
-            <div className="flex items-center gap-2 font-medium">
-              <span className="font-extrabold text-stone-900 dark:text-stone-100">StudyAce AI</span>
-              <span>• Classes 6th–10th Smart Learning Companion</span>
-            </div>
-            <div>
-              Powered by Google Gemini 2.5 Flash • Spaced Revision, YouTube Grounding & Deep Focus
-            </div>
-          </div>
-        </footer>
+        {/* Professional Modern Footer */}
+        <Footer />
       </div>
 
       {/* Global Modals & Notifications */}
