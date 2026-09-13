@@ -62,8 +62,8 @@ async function callGemini(options: {
     throw new Error("GEMINI_API_KEY is not configured on the server");
   }
 
-  // Active production models: gemini-flash-latest, gemini-3.1-flash-lite, gemini-2.5-flash
-  const candidateModels = ["gemini-flash-latest", "gemini-3.1-flash-lite", "gemini-2.5-flash"];
+  // Active production models: gemini-3.1-flash-lite (fastest, most reliable), gemini-flash-latest
+  const candidateModels = ["gemini-3.1-flash-lite", "gemini-flash-latest"];
   let lastError: any = null;
 
   for (const model of candidateModels) {
